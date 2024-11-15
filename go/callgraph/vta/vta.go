@@ -59,6 +59,8 @@ package vta
 import (
 	"go/types"
 
+	"maps"
+
 	"golang.org/x/tools/go/callgraph"
 	"golang.org/x/tools/go/ssa"
 )
@@ -189,4 +191,38 @@ func (mc methodCache) methods(t types.Type, name string, prog *ssa.Program) []*s
 	}
 	mc[t] = ms
 	return ms[name]
+}
+
+// typeAssertTypes returns a mapping from each type assertion instruction in `f` to the possible types of its input variable.
+func typeAssertTypes(f *ssa.Function, typesMap *propTypeMap, cache methodCache) map[*ssa.TypeAssert][]types.Type {
+	asserts := typeAsserts(f)
+	result := make(map[*ssa.TypeAssert][]types.Type)
+
+	for _, ta := range asserts {
+		inputVal := ta.X
+		n := local{val: inputVal}
+
+		var possTypes []types.Type
+		typesMap.propTypes(n)(func(p propType) bool {
+			possTypes = append(possTypes, p.typ)
+			return true
+		})
+
+		result[ta] = possTypes
+	}
+
+	return result
+}
+
+func GetTypeAsserts(funcs map[*ssa.Function]bool, initial *callgraph.Graph) map[*ssa.TypeAssert][]types.Type {
+	callees := makeCalleesFunc(funcs, initial)
+	vtaG, canon := typePropGraph(funcs, callees)
+	typesMap := propagate(vtaG, canon)
+	result := make(map[*ssa.TypeAssert][]types.Type)
+	for f, in := range funcs {
+		if in {
+			maps.Copy(result, typeAssertTypes(f, &typesMap, methodCache{}))
+		}
+	}
+	return result
 }

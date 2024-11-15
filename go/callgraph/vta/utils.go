@@ -187,3 +187,16 @@ func calls(f *ssa.Function) []ssa.CallInstruction {
 	}
 	return calls
 }
+
+// typeAsserts returns the set of type assert instructions in `f`.
+func typeAsserts(f *ssa.Function) []*ssa.TypeAssert {
+	var asserts []*ssa.TypeAssert
+	for _, bl := range f.Blocks {
+		for _, instr := range bl.Instrs {
+			if ta, ok := instr.(*ssa.TypeAssert); ok {
+				asserts = append(asserts, ta)
+			}
+		}
+	}
+	return asserts
+}
