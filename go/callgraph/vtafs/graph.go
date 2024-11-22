@@ -102,18 +102,17 @@ func (c channelElem) String() string {
 
 // field node for VTA.
 type field struct {
-	StructType types.Type
-	index      int // index of the field in the struct
+	StructVar 	*ssa.Value
+	Typ 		types.Type
+	FieldName   int // index of the field in the struct
 }
 
 func (f field) Type() types.Type {
-	s := typeparams.CoreType(f.StructType).(*types.Struct)
-	return s.Field(f.index).Type()
+	return f.Typ
 }
 
-func (f field) String() string {
-	s := typeparams.CoreType(f.StructType).(*types.Struct)
-	return fmt.Sprintf("Field(%v:%s)", f.StructType, s.Field(f.index).Name())
+func (fn field) String() string {
+	return fmt.Sprintf("Field(%s.%d)", (*fn.StructVar).Name(), fn.FieldName)
 }
 
 // global node for VTA.
@@ -355,7 +354,30 @@ func (b *builder) fun(f *ssa.Function) {
 func (b *builder) instr(instr ssa.Instruction) {
 	switch i := instr.(type) {
 	case *ssa.Store:
-		b.addInFlowAliasEdges(b.nodeFromVal(i.Addr), b.nodeFromVal(i.Val))
+		// 检查是否是字段赋值
+		if sel, ok := i.Addr.(*ssa.FieldAddr); ok {
+			structVar := sel.X
+			fieldName := sel.Field // 字段索引或名称
+			fieldTyp := sel.Type()
+
+			// 创建特定字段的节点
+			fnode := field{
+				StructVar:  &structVar,
+				Typ:        fieldTyp,
+				FieldName:  fieldName,
+			}
+
+			// 添加类型流边
+			b.addInFlowAliasEdges(b.nodeFromVal(i.Val), fnode)
+
+			// 如果需要，可以添加逆向的 alias 边
+			if canAlias(b.nodeFromVal(i.Val), fnode) {
+				b.addInFlowAliasEdges(fnode, b.nodeFromVal(i.Val))
+			}
+		} else {
+			// 处理普通赋值
+			b.addInFlowAliasEdges(b.nodeFromVal(i.Addr), b.nodeFromVal(i.Val))
+		}
 	case *ssa.MakeInterface:
 		b.addInFlowEdge(b.nodeFromVal(i.X), b.nodeFromVal(i))
 	case *ssa.MakeClosure:
@@ -479,15 +501,15 @@ func (b *builder) extract(e *ssa.Extract) {
 }
 
 func (b *builder) field(f *ssa.Field) {
-	fnode := field{StructType: f.X.Type(), index: f.Field}
+	t := typeparams.CoreType(f.Type()).(*types.Pointer).Elem()
+	fnode := field{Typ: t, FieldName: f.Field, StructVar: &f.X}
 	b.addInFlowEdge(fnode, b.nodeFromVal(f))
 }
 
 func (b *builder) fieldAddr(f *ssa.FieldAddr) {
-	t := typeparams.CoreType(f.X.Type()).(*types.Pointer).Elem()
-
 	// Since we are getting pointer to a field, make a bidirectional edge.
-	fnode := field{StructType: t, index: f.Field}
+	t := typeparams.CoreType(f.Type()).(*types.Pointer).Elem()
+	fnode := field{Typ: t, FieldName: f.Field, StructVar: &f.X}
 	b.addInFlowEdge(fnode, b.nodeFromVal(f))
 	b.addInFlowEdge(b.nodeFromVal(f), fnode)
 }
@@ -783,6 +805,20 @@ func (b *builder) addInFlowEdge(s, d node) {
 
 // Creates const, pointer, global, func, and local nodes based on register instructions.
 func (b *builder) nodeFromVal(val ssa.Value) node {
+	// 处理字段地址
+	if faddr, ok := val.(*ssa.FieldAddr); ok {
+		// 获取字段所在结构体的类型
+		structVar := faddr.X
+		fieldName := faddr.Field // 假设 Field 是字段索引
+		fieldTyp := faddr.Type()
+
+		return field{
+			StructVar:  &structVar,
+			Typ:        fieldTyp,
+			FieldName:  fieldName,
+		}
+	}
+
 	if p, ok := types.Unalias(val.Type()).(*types.Pointer); ok && !types.IsInterface(p.Elem()) && !isFunction(p.Elem()) {
 		// Nested pointer to interfaces are modeled as a special
 		// nestedPtrInterface node.
@@ -841,7 +877,11 @@ func (b *builder) representative(n node) node {
 	case nestedPtrFunction:
 		return nestedPtrFunction{typ: t}
 	case field:
-		return field{StructType: canonicalize(i.StructType, &b.canon), index: i.index}
+		return field{
+			StructVar:  i.StructVar,                          // 保留结构体变量
+			Typ:        canonicalize(i.Typ, &b.canon),        // 对字段类型进行规范化
+			FieldName:  i.FieldName,                          // 保留字段名称索引
+		}
 	case indexedLocal:
 		return indexedLocal{typ: t, val: i.val, index: i.index}
 	case local, global, panicArg, recoverReturn, function, resultVar:
