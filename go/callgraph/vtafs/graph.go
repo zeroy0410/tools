@@ -102,7 +102,7 @@ func (c channelElem) String() string {
 
 // field node for VTA.
 type field struct {
-	StructVar 	*ssa.Value
+	StructVar 	ssa.Value
 	Typ 		types.Type
 	FieldName   int // index of the field in the struct
 }
@@ -112,7 +112,7 @@ func (f field) Type() types.Type {
 }
 
 func (fn field) String() string {
-	return fmt.Sprintf("Field(%s.%d)", (*fn.StructVar).Name(), fn.FieldName)
+	return fmt.Sprintf("Field(%s.%d) %v", (fn.StructVar).Name(), fn.FieldName, fn.Typ)
 }
 
 // global node for VTA.
@@ -352,6 +352,7 @@ func (b *builder) fun(f *ssa.Function) {
 }
 
 func (b *builder) instr(instr ssa.Instruction) {
+	//fmt.Println("Instr: ", instr.String())
 	switch i := instr.(type) {
 	case *ssa.Store:
 		// 检查是否是字段赋值
@@ -362,17 +363,17 @@ func (b *builder) instr(instr ssa.Instruction) {
 
 			// 创建特定字段的节点
 			fnode := field{
-				StructVar:  &structVar,
+				StructVar:  structVar,
 				Typ:        fieldTyp,
 				FieldName:  fieldName,
 			}
 
 			// 添加类型流边
-			b.addInFlowAliasEdges(b.nodeFromVal(i.Val), fnode)
+			b.addInFlowAliasEdges(fnode, b.nodeFromVal(i.Val))
 
 			// 如果需要，可以添加逆向的 alias 边
 			if canAlias(b.nodeFromVal(i.Val), fnode) {
-				b.addInFlowAliasEdges(fnode, b.nodeFromVal(i.Val))
+				b.addInFlowAliasEdges(b.nodeFromVal(i.Val), fnode)
 			}
 		} else {
 			// 处理普通赋值
@@ -502,14 +503,14 @@ func (b *builder) extract(e *ssa.Extract) {
 
 func (b *builder) field(f *ssa.Field) {
 	t := typeparams.CoreType(f.Type()).(*types.Pointer).Elem()
-	fnode := field{Typ: t, FieldName: f.Field, StructVar: &f.X}
+	fnode := field{Typ: t, FieldName: f.Field, StructVar: f.X}
 	b.addInFlowEdge(fnode, b.nodeFromVal(f))
 }
 
 func (b *builder) fieldAddr(f *ssa.FieldAddr) {
 	// Since we are getting pointer to a field, make a bidirectional edge.
 	t := typeparams.CoreType(f.Type()).(*types.Pointer).Elem()
-	fnode := field{Typ: t, FieldName: f.Field, StructVar: &f.X}
+	fnode := field{Typ: t, FieldName: f.Field, StructVar: f.X}
 	b.addInFlowEdge(fnode, b.nodeFromVal(f))
 	b.addInFlowEdge(b.nodeFromVal(f), fnode)
 }
@@ -813,7 +814,7 @@ func (b *builder) nodeFromVal(val ssa.Value) node {
 		fieldTyp := faddr.Type()
 
 		return field{
-			StructVar:  &structVar,
+			StructVar:  structVar,
 			Typ:        fieldTyp,
 			FieldName:  fieldName,
 		}

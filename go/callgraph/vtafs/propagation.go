@@ -8,10 +8,9 @@ package vtafs
 
 import (
 	"go/types"
-	"slices"
-
 	"golang.org/x/tools/go/callgraph/vtafs/internal/trie"
 	"golang.org/x/tools/go/ssa"
+	"slices"
 
 	"golang.org/x/tools/go/types/typeutil"
 )
