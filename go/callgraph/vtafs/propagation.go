@@ -7,6 +7,7 @@
 package vtafs
 
 import (
+	//"fmt"
 	"go/types"
 	"golang.org/x/tools/go/callgraph/vtafs/internal/trie"
 	"golang.org/x/tools/go/ssa"
@@ -183,6 +184,7 @@ func propagate(graph *vtaGraph, canon *typeutil.Map) propTypeMap {
 		types := sccToTypes[sccID]
 		for _, idx := range scc {
 			nodeToTypes[graph.node[idx]] = types
+			//fmt.Println(sccID, graph.node[idx], types)
 		}
 	}
 	return nodeToTypes

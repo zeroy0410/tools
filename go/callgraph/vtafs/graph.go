@@ -102,7 +102,7 @@ func (c channelElem) String() string {
 
 // field node for VTA.
 type field struct {
-	StructVar 	ssa.Value
+	StructVar 	node
 	Typ 		types.Type
 	FieldName   int // index of the field in the struct
 }
@@ -112,7 +112,7 @@ func (f field) Type() types.Type {
 }
 
 func (fn field) String() string {
-	return fmt.Sprintf("Field(%s.%d) %v", (fn.StructVar).Name(), fn.FieldName, fn.Typ)
+	return fmt.Sprintf("Field(%s.%d) %v", (fn.StructVar).String(), fn.FieldName, fn.Typ)
 }
 
 // global node for VTA.
@@ -283,6 +283,7 @@ func (g *vtaGraph) successors(x idx) func(yield func(y idx) bool) {
 
 // addEdge adds an edge x->y to the graph.
 func (g *vtaGraph) addEdge(x, y node) {
+	fmt.Println("Add Edge: ", x, y)
 	if g.idx == nil {
 		g.idx = make(map[node]idx)
 	}
@@ -352,33 +353,10 @@ func (b *builder) fun(f *ssa.Function) {
 }
 
 func (b *builder) instr(instr ssa.Instruction) {
-	//fmt.Println("Instr: ", instr.String())
+	fmt.Println("Instr: ", instr.String())
 	switch i := instr.(type) {
 	case *ssa.Store:
-		// 检查是否是字段赋值
-		if sel, ok := i.Addr.(*ssa.FieldAddr); ok {
-			structVar := sel.X
-			fieldName := sel.Field // 字段索引或名称
-			fieldTyp := sel.Type()
-
-			// 创建特定字段的节点
-			fnode := field{
-				StructVar:  structVar,
-				Typ:        fieldTyp,
-				FieldName:  fieldName,
-			}
-
-			// 添加类型流边
-			b.addInFlowAliasEdges(fnode, b.nodeFromVal(i.Val))
-
-			// 如果需要，可以添加逆向的 alias 边
-			if canAlias(b.nodeFromVal(i.Val), fnode) {
-				b.addInFlowAliasEdges(b.nodeFromVal(i.Val), fnode)
-			}
-		} else {
-			// 处理普通赋值
-			b.addInFlowAliasEdges(b.nodeFromVal(i.Addr), b.nodeFromVal(i.Val))
-		}
+		b.addInFlowAliasEdges(b.nodeFromVal(i.Addr), b.nodeFromVal(i.Val))
 	case *ssa.MakeInterface:
 		b.addInFlowEdge(b.nodeFromVal(i.X), b.nodeFromVal(i))
 	case *ssa.MakeClosure:
@@ -809,10 +787,9 @@ func (b *builder) nodeFromVal(val ssa.Value) node {
 	// 处理字段地址
 	if faddr, ok := val.(*ssa.FieldAddr); ok {
 		// 获取字段所在结构体的类型
-		structVar := faddr.X
-		fieldName := faddr.Field // 假设 Field 是字段索引
+		structVar := b.nodeFromVal(faddr.X)
+		fieldName := faddr.Field
 		fieldTyp := faddr.Type()
-
 		return field{
 			StructVar:  structVar,
 			Typ:        fieldTyp,
