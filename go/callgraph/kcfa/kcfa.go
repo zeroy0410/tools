@@ -192,7 +192,7 @@ func typeAssertTypes(f *ssa.Function, typesMap *propTypeMap, cache methodCache) 
 
 	for _, ta := range asserts {
 		inputVal := ta.X
-		n := local{val: inputVal}
+		n := local{val: inputVal, ctx: context{}}
 
 		var possTypes []types.Type
 		typesMap.propTypes(n)(func(p propType) bool {

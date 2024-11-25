@@ -282,6 +282,7 @@ func (g *vtaGraph) successors(x idx) func(yield func(y idx) bool) {
 
 // addEdge adds an edge x->y to the graph.
 func (g *vtaGraph) addEdge(x, y node) {
+	fmt.Println("Add Edge: ", x, "->", y)
 	if g.idx == nil {
 		g.idx = make(map[node]idx)
 	}

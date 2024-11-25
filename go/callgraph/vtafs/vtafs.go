@@ -15,9 +15,9 @@ import (
 	"golang.org/x/tools/go/ssa"
 )
 
-// CallGraph uses the VTA algorithm to compute call graph for all functions
-// f:true in funcs. VTA refines the results of initial call graph and uses it
-// to establish interprocedural type flow. If initial is nil, VTA uses a more
+// CallGraph uses the VTAFS algorithm to compute call graph for all functions
+// f:true in funcs. VTAFS refines the results of initial call graph and uses it
+// to establish interprocedural type flow. If initial is nil, VTAFS uses a more
 // efficient approach to construct a CHA call graph.
 //
 // The resulting graph does not have a root node.
@@ -36,7 +36,7 @@ func CallGraph(funcs map[*ssa.Function]bool, initial *callgraph.Graph) *callgrap
 
 // constructor type linearly traverses the input program
 // and constructs a callgraph based on the results of the
-// VTA type propagation phase.
+// VTAFS type propagation phase.
 type constructor struct {
 	types   propTypeMap
 	cache   methodCache
@@ -62,7 +62,7 @@ func (c *constructor) constrct(g *callgraph.Graph, f *ssa.Function) {
 	}
 }
 
-// resolves computes the set of functions to which VTA resolves `c`. The resolved
+// resolves computes the set of functions to which VTAFS resolves `c`. The resolved
 // functions are intersected with functions to which `c.initial` resolves `c`.
 func (c *constructor) resolves(call ssa.CallInstruction) []*ssa.Function {
 	cc := call.Common()

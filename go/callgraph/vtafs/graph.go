@@ -16,13 +16,13 @@ import (
 	"golang.org/x/tools/internal/typeparams"
 )
 
-// node interface for VTA nodes.
+// node interface for VTAFS nodes.
 type node interface {
 	Type() types.Type
 	String() string
 }
 
-// constant node for VTA.
+// constant node for VTAFS.
 type constant struct {
 	typ types.Type
 }
@@ -35,7 +35,7 @@ func (c constant) String() string {
 	return fmt.Sprintf("Constant(%v)", c.Type())
 }
 
-// pointer node for VTA.
+// pointer node for VTAFS.
 type pointer struct {
 	typ *types.Pointer
 }
@@ -102,7 +102,7 @@ func (c channelElem) String() string {
 
 // field node for VTA.
 type field struct {
-	StructVar 	node
+	StructVar 	string
 	Typ 		types.Type
 	FieldName   int // index of the field in the struct
 }
@@ -112,7 +112,7 @@ func (f field) Type() types.Type {
 }
 
 func (fn field) String() string {
-	return fmt.Sprintf("Field(%s.%d) %v", (fn.StructVar).String(), fn.FieldName, fn.Typ)
+	return fmt.Sprintf("Field(%s.%d) %v", (fn.StructVar), fn.FieldName, fn.Typ)
 }
 
 // global node for VTA.
@@ -353,7 +353,7 @@ func (b *builder) fun(f *ssa.Function) {
 }
 
 func (b *builder) instr(instr ssa.Instruction) {
-	fmt.Println("Instr: ", instr.String())
+	fmt.Println("Instr: ", instr)
 	switch i := instr.(type) {
 	case *ssa.Store:
 		b.addInFlowAliasEdges(b.nodeFromVal(i.Addr), b.nodeFromVal(i.Val))
@@ -419,8 +419,10 @@ func (b *builder) instr(instr ssa.Instruction) {
 		b.panic(i)
 	case *ssa.Return:
 		b.rtrn(i)
+	case *ssa.Alloc:
+		b.alloc(i)
 	case *ssa.MakeChan, *ssa.MakeMap, *ssa.MakeSlice, *ssa.BinOp,
-		*ssa.Alloc, *ssa.DebugRef, *ssa.Convert, *ssa.Jump, *ssa.If,
+		*ssa.DebugRef, *ssa.Convert, *ssa.Jump, *ssa.If,
 		*ssa.Slice, *ssa.SliceToArrayPointer, *ssa.Range, *ssa.RunDefers:
 		// No interesting flow here.
 		// Notes on individual instructions:
@@ -432,6 +434,10 @@ func (b *builder) instr(instr ssa.Instruction) {
 	default:
 		panic(fmt.Sprintf("unsupported instruction %v\n", instr))
 	}
+}
+
+func (b *builder) alloc(a *ssa.Alloc) {
+	b.addInFlowEdge(b.nodeFromVal(a), b.nodeFromVal(a))
 }
 
 func (b *builder) unop(u *ssa.UnOp) {
@@ -481,14 +487,14 @@ func (b *builder) extract(e *ssa.Extract) {
 
 func (b *builder) field(f *ssa.Field) {
 	t := typeparams.CoreType(f.Type()).(*types.Pointer).Elem()
-	fnode := field{Typ: t, FieldName: f.Field, StructVar: f.X}
+	fnode := field{Typ: t, FieldName: f.Field, StructVar: unpackStructVar(f.X)}
 	b.addInFlowEdge(fnode, b.nodeFromVal(f))
 }
 
 func (b *builder) fieldAddr(f *ssa.FieldAddr) {
 	// Since we are getting pointer to a field, make a bidirectional edge.
 	t := typeparams.CoreType(f.Type()).(*types.Pointer).Elem()
-	fnode := field{Typ: t, FieldName: f.Field, StructVar: f.X}
+	fnode := field{Typ: t, FieldName: f.Field, StructVar: unpackStructVar(f.X)}
 	b.addInFlowEdge(fnode, b.nodeFromVal(f))
 	b.addInFlowEdge(b.nodeFromVal(f), fnode)
 }
@@ -782,12 +788,20 @@ func (b *builder) addInFlowEdge(s, d node) {
 	}
 }
 
+func unpackStructVar(s ssa.Value) string{
+	if f, ok := s.(*ssa.FieldAddr); ok {
+		return unpackStructVar(f.X) + s.String()
+	}
+	if f, ok := s.(*ssa.Field); ok {
+		return unpackStructVar(f.X) + s.String()
+	}
+	return s.String()
+}
+
 // Creates const, pointer, global, func, and local nodes based on register instructions.
 func (b *builder) nodeFromVal(val ssa.Value) node {
-	// 处理字段地址
 	if faddr, ok := val.(*ssa.FieldAddr); ok {
-		// 获取字段所在结构体的类型
-		structVar := b.nodeFromVal(faddr.X)
+		structVar := unpackStructVar(faddr.X)
 		fieldName := faddr.Field
 		fieldTyp := faddr.Type()
 		return field{

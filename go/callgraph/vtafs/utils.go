@@ -48,7 +48,7 @@ func hasInFlow(n node) bool {
 	if _, ok := n.(recoverReturn); ok {
 		return true
 	}
-	return true
+
 	t := n.Type()
 
 	if i := interfaceUnderPtr(t); i != nil {
