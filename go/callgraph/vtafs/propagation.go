@@ -7,7 +7,7 @@
 package vtafs
 
 import (
-	//"fmt"
+	"fmt"
 	"go/types"
 	"golang.org/x/tools/go/callgraph/vtafs/internal/trie"
 	"golang.org/x/tools/go/ssa"
@@ -136,6 +136,7 @@ func (ptm propTypeMap) propTypes(n node) func(yield func(propType) bool) {
 // reaching the node. `canon` is used for type uniqueness.
 func propagate(graph *vtaGraph, canon *typeutil.Map) propTypeMap {
 	sccs, idxToSccID := scc(graph)
+	fmt.Println("Nodes numbers: ", len(graph.idx))
 
 	// propTypeIds are used to create unique ids for
 	// propType, to be used for trie-based type sets.

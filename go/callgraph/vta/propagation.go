@@ -5,11 +5,11 @@
 package vta
 
 import (
+	"fmt"
 	"go/types"
-	"slices"
-
 	"golang.org/x/tools/go/callgraph/vta/internal/trie"
 	"golang.org/x/tools/go/ssa"
+	"slices"
 
 	"golang.org/x/tools/go/types/typeutil"
 )
@@ -133,6 +133,7 @@ func (ptm propTypeMap) propTypes(n node) func(yield func(propType) bool) {
 // and functions, stemming from higher-order data flow,
 // reaching the node. `canon` is used for type uniqueness.
 func propagate(graph *vtaGraph, canon *typeutil.Map) propTypeMap {
+	fmt.Println("Nodes numbers: ", len(graph.idx))
 	sccs, idxToSccID := scc(graph)
 
 	// propTypeIds are used to create unique ids for
@@ -163,7 +164,6 @@ func propagate(graph *vtaGraph, canon *typeutil.Map) propTypeMap {
 		}
 		sccToTypes[sccID] = &typeSet
 	}
-
 	for i := len(sccs) - 1; i >= 0; i-- {
 		nextSccs := make(map[int]empty)
 		for _, n := range sccs[i] {

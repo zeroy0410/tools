@@ -102,7 +102,7 @@ func (c channelElem) String() string {
 
 // field node for VTA.
 type field struct {
-	StructVar 	string
+	StructVar 	ssa.Value
 	Typ 		types.Type
 	FieldName   int // index of the field in the struct
 }
@@ -283,7 +283,7 @@ func (g *vtaGraph) successors(x idx) func(yield func(y idx) bool) {
 
 // addEdge adds an edge x->y to the graph.
 func (g *vtaGraph) addEdge(x, y node) {
-	fmt.Println("Add Edge: ", x, y)
+	//fmt.Println("Add Edge: ", x, y)
 	if g.idx == nil {
 		g.idx = make(map[node]idx)
 	}
@@ -353,7 +353,7 @@ func (b *builder) fun(f *ssa.Function) {
 }
 
 func (b *builder) instr(instr ssa.Instruction) {
-	fmt.Println("Instr: ", instr)
+	//fmt.Println("Instr: ", instr)
 	switch i := instr.(type) {
 	case *ssa.Store:
 		b.addInFlowAliasEdges(b.nodeFromVal(i.Addr), b.nodeFromVal(i.Val))
@@ -486,15 +486,21 @@ func (b *builder) extract(e *ssa.Extract) {
 }
 
 func (b *builder) field(f *ssa.Field) {
-	t := typeparams.CoreType(f.Type()).(*types.Pointer).Elem()
-	fnode := field{Typ: t, FieldName: f.Field, StructVar: unpackStructVar(f.X)}
-	b.addInFlowEdge(fnode, b.nodeFromVal(f))
+	coreType := typeparams.CoreType(f.Type())
+	if ptrType, ok := coreType.(*types.Pointer); ok {
+		t := ptrType.Elem()
+		fnode := field{Typ: t, FieldName: f.Field, StructVar: f.X}
+		b.addInFlowEdge(fnode, b.nodeFromVal(f))
+	} else {
+		fnode := field{Typ: f.Type(), FieldName: f.Field, StructVar: f.X}
+		b.addInFlowEdge(fnode, b.nodeFromVal(f))
+	}
 }
 
 func (b *builder) fieldAddr(f *ssa.FieldAddr) {
 	// Since we are getting pointer to a field, make a bidirectional edge.
 	t := typeparams.CoreType(f.Type()).(*types.Pointer).Elem()
-	fnode := field{Typ: t, FieldName: f.Field, StructVar: unpackStructVar(f.X)}
+	fnode := field{Typ: t, FieldName: f.Field, StructVar: f.X}
 	b.addInFlowEdge(fnode, b.nodeFromVal(f))
 	b.addInFlowEdge(b.nodeFromVal(f), fnode)
 }
@@ -801,7 +807,7 @@ func unpackStructVar(s ssa.Value) string{
 // Creates const, pointer, global, func, and local nodes based on register instructions.
 func (b *builder) nodeFromVal(val ssa.Value) node {
 	if faddr, ok := val.(*ssa.FieldAddr); ok {
-		structVar := unpackStructVar(faddr.X)
+		structVar := faddr.X
 		fieldName := faddr.Field
 		fieldTyp := faddr.Type()
 		return field{

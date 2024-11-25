@@ -49,12 +49,11 @@
 package kcfa
 
 import (
+	//"fmt"
 	"go/types"
-
-	"maps"
-
 	"golang.org/x/tools/go/callgraph"
 	"golang.org/x/tools/go/ssa"
+	"maps"
 )
 
 // CallGraph uses the VTA algorithm to compute call graph for all functions
@@ -186,17 +185,17 @@ func (mc methodCache) methods(t types.Type, name string, prog *ssa.Program) []*s
 }
 
 // typeAssertTypes returns a mapping from each type assertion instruction in `f` to the possible types of its input variable.
-func typeAssertTypes(f *ssa.Function, typesMap *propTypeMap, cache methodCache) map[*ssa.TypeAssert][]types.Type {
+func typeAssertTypes(f *ssa.Function, typesMap *propTypeMap, cache methodCache, ctx context) map[*ssa.TypeAssert] map[types.Type]struct{} {
 	asserts := typeAsserts(f)
-	result := make(map[*ssa.TypeAssert][]types.Type)
+	result := make(map[*ssa.TypeAssert]map[types.Type]struct{})
 
 	for _, ta := range asserts {
 		inputVal := ta.X
-		n := local{val: inputVal, ctx: context{}}
+		n := local{val: inputVal, ctx: ctx}
 
-		var possTypes []types.Type
+		var possTypes map[types.Type]struct{} = make(map[types.Type]struct{})
 		typesMap.propTypes(n)(func(p propType) bool {
-			possTypes = append(possTypes, p.typ)
+			possTypes[p.typ] = struct{}{}
 			return true
 		})
 
@@ -210,11 +209,23 @@ func GetTypeAsserts(funcs map[*ssa.Function]bool, initial *callgraph.Graph) map[
 	callees := makeCalleesFunc(funcs, initial)
 	vtaG, canon := typePropGraph(funcs, callees)
 	typesMap := propagate(vtaG, canon)
-	result := make(map[*ssa.TypeAssert][]types.Type)
-	for f, in := range funcs {
-		if in {
-			maps.Copy(result, typeAssertTypes(f, &typesMap, methodCache{}))
+	result := make(map[*ssa.TypeAssert]map[types.Type]struct{})
+	for f, _ := range AllFuncs {
+		tmp := typeAssertTypes(f.f, &typesMap, methodCache{}, f.ctx)
+		for k, v := range tmp {
+			if _, found := result[k]; found {
+				maps.Copy(result[k], v)
+			} else {
+				result[k] = v
+			}
 		}
 	}
-	return result
+	Result := make(map[*ssa.TypeAssert][]types.Type)
+	for k, v := range result {
+		Result[k] = make([]types.Type, 0, len(v))
+		for p, _ := range v {
+			Result[k] = append(Result[k], p)
+		}
+	}
+	return Result
 }

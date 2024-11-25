@@ -342,7 +342,7 @@ func (g *vtaGraph) successors(x idx) func(yield func(y idx) bool) {
 
 // addEdge adds an edge x->y to the graph.
 func (g *vtaGraph) addEdge(x, y node) {
-	fmt.Println("Add Edge: ", x, y)
+	//fmt.Println("Add Edge: ", x, y)
 	if g.idx == nil {
 		g.idx = make(map[node]idx)
 	}
@@ -418,8 +418,20 @@ func (b *builder) visit(funcs map[*ssa.Function]bool) {
 	}
 }
 
+type funcNode struct{
+	f *ssa.Function
+	ctx context
+}
+
+//record all functions with context so that after type propagation, we can find the function with context.
+var AllFuncs map[funcNode]struct{} = make(map[funcNode]struct{})
+
 func (b *builder) fun(f *ssa.Function, ctx context) {
-	fmt.Println("funcs: ", f, ctx)
+	//fmt.Println("funcs: ", f, ctx)
+	if _, ok := AllFuncs[funcNode{f, ctx}]; ok {
+		return
+	}
+	AllFuncs[funcNode{f, ctx}] = struct{}{}
 	for _, bl := range f.Blocks {
 		for _, instr := range bl.Instrs {
 			b.instr(instr, ctx)
@@ -755,7 +767,7 @@ func addArgumentFlows(b *builder, c ssa.CallInstruction, f *ssa.Function, ctx co
 		// The flow other way around would bake in information from the
 		// initial call graph.
 		if isFunction(f.Params[0].Type()) {
-			b.addInFlowEdge(b.nodeFromVal(cc.Value, ctx), b.nodeFromVal(f.Params[0], context{callSite: c}))
+			b.addInFlowEdge(b.nodeFromVal(cc.Value, context{callSite: c}), b.nodeFromVal(f.Params[0], ctx))
 		}
 	}
 
@@ -772,7 +784,7 @@ func addArgumentFlows(b *builder, c ssa.CallInstruction, f *ssa.Function, ctx co
 		if len(f.Params) <= i+offset {
 			return
 		}
-		b.addInFlowAliasEdges(b.nodeFromVal(f.Params[i+offset], ctx), b.nodeFromVal(v, context{callSite: c}))
+		b.addInFlowAliasEdges(b.nodeFromVal(f.Params[i+offset], context{callSite: c}), b.nodeFromVal(v, ctx))
 	}
 }
 
