@@ -49,7 +49,7 @@
 package kcfa
 
 import (
-	//"fmt"
+	"fmt"
 	"go/types"
 	"golang.org/x/tools/go/callgraph"
 	"golang.org/x/tools/go/ssa"
@@ -66,13 +66,17 @@ import (
 // CallGraph does not make any assumptions on initial types global variables
 // and function/method inputs can have. CallGraph is then sound, modulo use of
 // reflection and unsafe, if the initial call graph is sound.
+var edgeCnt int = 0
 func CallGraph(funcs map[*ssa.Function]bool, initial *callgraph.Graph) *callgraph.Graph {
+	AllFuncs = make(map[funcNode]struct{})
 	callees := makeCalleesFunc(funcs, initial)
 	vtaG, canon := typePropGraph(funcs, callees)
 	types := propagate(vtaG, canon)
 
 	c := &constructor{types: types, callees: callees, cache: make(methodCache)}
-	return c.construct(funcs)
+	cg := c.construct(AllFuncs)
+	fmt.Printf("kcfa: %d edges\n", edgeCnt)
+	return cg
 }
 
 // constructor type linearly traverses the input program
@@ -84,28 +88,27 @@ type constructor struct {
 	callees calleesFunc
 }
 
-func (c *constructor) construct(funcs map[*ssa.Function]bool) *callgraph.Graph {
+func (c *constructor) construct(funcs map[funcNode]struct{}) *callgraph.Graph {
 	cg := &callgraph.Graph{Nodes: make(map[*ssa.Function]*callgraph.Node)}
-	for f, in := range funcs {
-		if in {
-			c.constrct(cg, f)
-		}
+	for k, _ := range funcs {
+		c.constrct(cg, k.f, k.ctx)
 	}
 	return cg
 }
 
-func (c *constructor) constrct(g *callgraph.Graph, f *ssa.Function) {
+func (c *constructor) constrct(g *callgraph.Graph, f *ssa.Function, ctx context) {
 	caller := g.CreateNode(f)
 	for _, call := range calls(f) {
-		for _, c := range c.resolves(call) {
+		for _, c := range c.resolves(call, ctx) {
 			callgraph.AddEdge(caller, call, g.CreateNode(c))
+			edgeCnt++
 		}
 	}
 }
 
 // resolves computes the set of functions to which VTA resolves `c`. The resolved
 // functions are intersected with functions to which `c.initial` resolves `c`.
-func (c *constructor) resolves(call ssa.CallInstruction) []*ssa.Function {
+func (c *constructor) resolves(call ssa.CallInstruction, ctx context) []*ssa.Function {
 	cc := call.Common()
 	if cc.StaticCallee() != nil {
 		return []*ssa.Function{cc.StaticCallee()}
@@ -118,7 +121,7 @@ func (c *constructor) resolves(call ssa.CallInstruction) []*ssa.Function {
 
 	// Cover the case of dynamic higher-order and interface calls.
 	var res []*ssa.Function
-	resolved := resolve(call, c.types, c.cache)
+	resolved := resolve(call, c.types, c.cache, ctx)
 	siteCallees(call, c.callees)(func(f *ssa.Function) bool {
 		if _, ok := resolved[f]; ok {
 			res = append(res, f)
@@ -130,9 +133,9 @@ func (c *constructor) resolves(call ssa.CallInstruction) []*ssa.Function {
 
 // resolve returns a set of functions `c` resolves to based on the
 // type propagation results in `types`.
-func resolve(c ssa.CallInstruction, types propTypeMap, cache methodCache) map[*ssa.Function]empty {
+func resolve(c ssa.CallInstruction, types propTypeMap, cache methodCache, ctx context) map[*ssa.Function]empty {
 	fns := make(map[*ssa.Function]empty)
-	n := local{val: c.Common().Value}
+	n := local{val: c.Common().Value, ctx: ctx}
 	types.propTypes(n)(func(p propType) bool {
 		for _, f := range propFunc(p, c, cache) {
 			fns[f] = empty{}
@@ -205,7 +208,10 @@ func typeAssertTypes(f *ssa.Function, typesMap *propTypeMap, cache methodCache, 
 	return result
 }
 
+var ResultType map[*ssa.TypeAssert][]types.Type = make(map[*ssa.TypeAssert][]types.Type)
+
 func GetTypeAsserts(funcs map[*ssa.Function]bool, initial *callgraph.Graph) map[*ssa.TypeAssert][]types.Type {
+	AllFuncs = make(map[funcNode]struct{})
 	callees := makeCalleesFunc(funcs, initial)
 	vtaG, canon := typePropGraph(funcs, callees)
 	typesMap := propagate(vtaG, canon)
@@ -227,5 +233,6 @@ func GetTypeAsserts(funcs map[*ssa.Function]bool, initial *callgraph.Graph) map[
 			Result[k] = append(Result[k], p)
 		}
 	}
+	ResultType = Result
 	return Result
 }

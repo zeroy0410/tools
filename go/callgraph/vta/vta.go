@@ -57,8 +57,8 @@ package vta
 // TODO(zpavlinovic): update VTA for how it handles generic function bodies and instantiation wrappers.
 
 import (
+	"fmt"
 	"go/types"
-
 	"maps"
 
 	"golang.org/x/tools/go/callgraph"
@@ -75,13 +75,16 @@ import (
 // CallGraph does not make any assumptions on initial types global variables
 // and function/method inputs can have. CallGraph is then sound, modulo use of
 // reflection and unsafe, if the initial call graph is sound.
+var edgeCnt int = 0
 func CallGraph(funcs map[*ssa.Function]bool, initial *callgraph.Graph) *callgraph.Graph {
 	callees := makeCalleesFunc(funcs, initial)
 	vtaG, canon := typePropGraph(funcs, callees)
 	types := propagate(vtaG, canon)
 
 	c := &constructor{types: types, callees: callees, cache: make(methodCache)}
-	return c.construct(funcs)
+	cg := c.construct(funcs)
+	fmt.Printf("vta: %d edges\n", edgeCnt)
+	return cg
 }
 
 // constructor type linearly traverses the input program
@@ -108,6 +111,7 @@ func (c *constructor) constrct(g *callgraph.Graph, f *ssa.Function) {
 	for _, call := range calls(f) {
 		for _, c := range c.resolves(call) {
 			callgraph.AddEdge(caller, call, g.CreateNode(c))
+			edgeCnt++
 		}
 	}
 }
