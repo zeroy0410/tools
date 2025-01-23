@@ -102,9 +102,8 @@ func (c channelElem) String() string {
 
 // field node for VTA.
 type field struct {
-	StructVar 	ssa.Value
 	Typ 		types.Type
-	FieldName   int // index of the field in the struct
+	FieldId     int
 }
 
 func (f field) Type() types.Type {
@@ -112,7 +111,7 @@ func (f field) Type() types.Type {
 }
 
 func (fn field) String() string {
-	return fmt.Sprintf("Field(%s.%d) %v", (fn.StructVar), fn.FieldName, fn.Typ)
+	return fmt.Sprintf("Field(%d) %v", (fn.FieldId), fn.Typ)
 }
 
 // global node for VTA.
@@ -311,7 +310,7 @@ func (g *vtaGraph) addEdge(x, y node) {
 // `callgraph` needed to establish interprocedural edges. Returns the
 // graph and a map for unique type representatives.
 func typePropGraph(funcs map[*ssa.Function]bool, callees calleesFunc) (*vtaGraph, *typeutil.Map) {
-	b := builder{callees: callees}
+	b := builder{callees: callees, fieldTree: NewFieldTree()}
 	b.visit(funcs)
 	b.callees = nil // ensure callees is not pinned by pointers to other fields of b.
 	return &b.graph, &b.canon
@@ -331,6 +330,8 @@ type builder struct {
 	// types too, in particular type representatives. Each value is a
 	// pointer so this map is not expected to take much memory.
 	canon typeutil.Map
+	fieldTree *FieldTree
+
 }
 
 func (b *builder) visit(funcs map[*ssa.Function]bool) {
@@ -353,7 +354,7 @@ func (b *builder) fun(f *ssa.Function) {
 }
 
 func (b *builder) instr(instr ssa.Instruction) {
-	//fmt.Println("Instr: ", instr)
+	fmt.Println("Instr: ", instr)
 	switch i := instr.(type) {
 	case *ssa.Store:
 		b.addInFlowAliasEdges(b.nodeFromVal(i.Addr), b.nodeFromVal(i.Val))
@@ -485,14 +486,36 @@ func (b *builder) extract(e *ssa.Extract) {
 	b.addInFlowAliasEdges(b.nodeFromVal(e), local)
 }
 
+func (b *builder) convertToField(s ssa.Value) *TreeNode {
+	if f, ok := s.(*ssa.UnOp); ok && f.Op == token.MUL {
+		return b.convertToField(f.X)
+	}
+	v, path := unpackStructVar(s)
+	return b.Insert(v, path, nil)
+}
+
+func unpackStructVar(s ssa.Value) (ssa.Value, []int) {
+	if f, ok := s.(*ssa.FieldAddr); ok {
+		v, path := unpackStructVar(f.X)
+		return v,append(path, f.Field)
+	}
+	if f, ok := s.(*ssa.Field); ok {
+		v, path := unpackStructVar(f.X)
+		return v,append(path, f.Field)
+	}
+	return s, []int{}
+}
+
 func (b *builder) field(f *ssa.Field) {
 	coreType := typeparams.CoreType(f.Type())
 	if ptrType, ok := coreType.(*types.Pointer); ok {
 		t := ptrType.Elem()
-		fnode := field{Typ: t, FieldName: f.Field, StructVar: f.X}
+		struct_var, path := unpackStructVar(f)
+		fnode := field{ t, b.Insert(struct_var, path, t).ID }
 		b.addInFlowEdge(fnode, b.nodeFromVal(f))
 	} else {
-		fnode := field{Typ: f.Type(), FieldName: f.Field, StructVar: f.X}
+		struct_var, path := unpackStructVar(f)
+		fnode := field{ f.Type(), b.Insert(struct_var, path, f.Type()).ID }
 		b.addInFlowEdge(fnode, b.nodeFromVal(f))
 	}
 }
@@ -500,7 +523,8 @@ func (b *builder) field(f *ssa.Field) {
 func (b *builder) fieldAddr(f *ssa.FieldAddr) {
 	// Since we are getting pointer to a field, make a bidirectional edge.
 	t := typeparams.CoreType(f.Type()).(*types.Pointer).Elem()
-	fnode := field{Typ: t, FieldName: f.Field, StructVar: f.X}
+	struct_var, path := unpackStructVar(f)
+	fnode := field{ t, b.Insert(struct_var, path, t).ID }
 	b.addInFlowEdge(fnode, b.nodeFromVal(f))
 	b.addInFlowEdge(b.nodeFromVal(f), fnode)
 }
@@ -598,10 +622,10 @@ func (b *builder) next(n *ssa.Next) {
 	b.addInFlowAliasEdges(indexedLocal{val: n, typ: vt, index: 2}, mapValue{typ: vt})
 }
 
-// addInFlowAliasEdges adds an edge r -> l to b.graph if l is a node that can
-// have an inflow, i.e., a node that represents an interface or an unresolved
-// function value. Similarly for the edge l -> r with an additional condition
-// of that l and r can potentially alias.
+// addInFlowAliasEdges 函数在满足条件时将边 r -> l 添加到 b.graph 中，
+// 条件是 l 必须是可以接收流入的节点，即一个表示接口或未解析的函数值的节点。
+// 同样地，在满足附加条件时，函数会添加边 l -> r，这个附加条件是 l 和 r 可能存在别名关系。
+
 func (b *builder) addInFlowAliasEdges(l, r node) {
 	b.addInFlowEdge(r, l)
 
@@ -794,28 +818,8 @@ func (b *builder) addInFlowEdge(s, d node) {
 	}
 }
 
-func unpackStructVar(s ssa.Value) string{
-	if f, ok := s.(*ssa.FieldAddr); ok {
-		return unpackStructVar(f.X) + s.String()
-	}
-	if f, ok := s.(*ssa.Field); ok {
-		return unpackStructVar(f.X) + s.String()
-	}
-	return s.String()
-}
-
 // Creates const, pointer, global, func, and local nodes based on register instructions.
 func (b *builder) nodeFromVal(val ssa.Value) node {
-	if faddr, ok := val.(*ssa.FieldAddr); ok {
-		structVar := faddr.X
-		fieldName := faddr.Field
-		fieldTyp := faddr.Type()
-		return field{
-			StructVar:  structVar,
-			Typ:        fieldTyp,
-			FieldName:  fieldName,
-		}
-	}
 
 	if p, ok := types.Unalias(val.Type()).(*types.Pointer); ok && !types.IsInterface(p.Elem()) && !isFunction(p.Elem()) {
 		// Nested pointer to interfaces are modeled as a special
@@ -876,9 +880,8 @@ func (b *builder) representative(n node) node {
 		return nestedPtrFunction{typ: t}
 	case field:
 		return field{
-			StructVar:  i.StructVar,                          // 保留结构体变量
 			Typ:        canonicalize(i.Typ, &b.canon),        // 对字段类型进行规范化
-			FieldName:  i.FieldName,                          // 保留字段名称索引
+			FieldId:  i.FieldId,
 		}
 	case indexedLocal:
 		return indexedLocal{typ: t, val: i.val, index: i.index}
