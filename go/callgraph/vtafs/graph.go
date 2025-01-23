@@ -282,7 +282,7 @@ func (g *vtaGraph) successors(x idx) func(yield func(y idx) bool) {
 
 // addEdge adds an edge x->y to the graph.
 func (g *vtaGraph) addEdge(x, y node) {
-	//fmt.Println("Add Edge: ", x, y)
+	fmt.Println("Add Edge: ", x, y)
 	if g.idx == nil {
 		g.idx = make(map[node]idx)
 	}
@@ -357,6 +357,9 @@ func (b *builder) instr(instr ssa.Instruction) {
 	fmt.Println("Instr: ", instr)
 	switch i := instr.(type) {
 	case *ssa.Store:
+		t1 := b.convertToField(i.Addr)
+		t2 := b.convertToField(i.Val)
+		b.CopySubtree(t2, t1) //t1 = t2
 		b.addInFlowAliasEdges(b.nodeFromVal(i.Addr), b.nodeFromVal(i.Val))
 	case *ssa.MakeInterface:
 		b.addInFlowEdge(b.nodeFromVal(i.X), b.nodeFromVal(i))

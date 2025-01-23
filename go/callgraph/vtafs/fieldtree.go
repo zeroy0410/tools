@@ -53,7 +53,9 @@ func (b *builder) Insert(root ssa.Value, path []int, typ types.Type) *TreeNode {
 		}
 		currentNode = currentNode.Children[index]
 	}
-	currentNode.Type = typ
+	if typ != nil {
+		currentNode.Type = typ
+	}
 	return currentNode
 }
 
@@ -62,7 +64,9 @@ func (b *builder) Insert(root ssa.Value, path []int, typ types.Type) *TreeNode {
 // dst = src
 func (b *builder) CopySubtree(src *TreeNode, dst *TreeNode) {
 	ft := b.fieldTree
-	b.addInFlowEdge(field{Typ: src.Type, FieldId: src.ID}, field{Typ: dst.Type, FieldId: dst.ID})
+	if src.Type != nil {
+		b.addInFlowEdge(field{Typ: src.Type, FieldId: src.ID}, field{Typ: src.Type, FieldId: dst.ID})
+	}
 	for index, child := range src.Children {
 		if _, exists := dst.Children[index]; !exists {
 			dst.Children[index] = &TreeNode{
@@ -74,23 +78,3 @@ func (b *builder) CopySubtree(src *TreeNode, dst *TreeNode) {
 		b.CopySubtree(child, dst.Children[index])
 	}
 }
-
-
-
-//func main() {
-//	// Example usage
-//	fieldTree := NewFieldTree()
-//
-//	// Simulated ssa.Value, replace with real instances in actual use
-//	var a, pb ssa.Value
-//
-//	// Insert field access a.0.0.0.1.0
-//	fieldTree.Insert(a, []int{0, 0, 0, 1, 0})
-//
-//	// Simulate field assignment a.b.c = pb.c
-//	fieldTree.Assign(a, []int{0, 1, 2}, pb, []int{1, 2})
-//
-//	// Print the tree or inspect the nodes as needed
-//	fmt.Println("Field trees updated.")
-//}
-
