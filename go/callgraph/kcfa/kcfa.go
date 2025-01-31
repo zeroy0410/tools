@@ -67,10 +67,10 @@ import (
 // and function/method inputs can have. CallGraph is then sound, modulo use of
 // reflection and unsafe, if the initial call graph is sound.
 var edgeCnt int = 0
-func CallGraph(funcs map[*ssa.Function]bool, initial *callgraph.Graph) *callgraph.Graph {
+func CallGraph(funcs map[*ssa.Function]bool, initial *callgraph.Graph, k int) *callgraph.Graph {
 	AllFuncs = make(map[funcNode]struct{})
 	callees := makeCalleesFunc(funcs, initial)
-	vtaG, canon := typePropGraph(funcs, callees)
+	vtaG, canon := typePropGraph(funcs, callees, k)
 	types := propagate(vtaG, canon)
 
 	c := &constructor{types: types, callees: callees, cache: make(methodCache)}
@@ -91,7 +91,7 @@ type constructor struct {
 func (c *constructor) construct(funcs map[funcNode]struct{}) *callgraph.Graph {
 	cg := &callgraph.Graph{Nodes: make(map[*ssa.Function]*callgraph.Node)}
 	for k, _ := range funcs {
-		c.constrct(cg, k.f, k.ctx)
+		c.constrct(cg, k.f, getOriginalContext(k.ctxKey))
 	}
 	return cg
 }
@@ -135,7 +135,7 @@ func (c *constructor) resolves(call ssa.CallInstruction, ctx context) []*ssa.Fun
 // type propagation results in `types`.
 func resolve(c ssa.CallInstruction, types propTypeMap, cache methodCache, ctx context) map[*ssa.Function]empty {
 	fns := make(map[*ssa.Function]empty)
-	n := local{val: c.Common().Value, ctx: ctx}
+	n := local{val: c.Common().Value, ctxKey: createCtxKey(ctx)}
 	types.propTypes(n)(func(p propType) bool {
 		for _, f := range propFunc(p, c, cache) {
 			fns[f] = empty{}
@@ -194,7 +194,7 @@ func typeAssertTypes(f *ssa.Function, typesMap *propTypeMap, cache methodCache, 
 
 	for _, ta := range asserts {
 		inputVal := ta.X
-		n := local{val: inputVal, ctx: ctx}
+		n := local{val: inputVal, ctxKey: createCtxKey(ctx)}
 
 		var possTypes map[types.Type]struct{} = make(map[types.Type]struct{})
 		typesMap.propTypes(n)(func(p propType) bool {
@@ -210,14 +210,14 @@ func typeAssertTypes(f *ssa.Function, typesMap *propTypeMap, cache methodCache, 
 
 var ResultType map[*ssa.TypeAssert][]types.Type = make(map[*ssa.TypeAssert][]types.Type)
 
-func GetTypeAsserts(funcs map[*ssa.Function]bool, initial *callgraph.Graph) map[*ssa.TypeAssert][]types.Type {
+func GetTypeAsserts(funcs map[*ssa.Function]bool, initial *callgraph.Graph, k int) map[*ssa.TypeAssert][]types.Type {
 	AllFuncs = make(map[funcNode]struct{})
 	callees := makeCalleesFunc(funcs, initial)
-	vtaG, canon := typePropGraph(funcs, callees)
+	vtaG, canon := typePropGraph(funcs, callees, k)
 	typesMap := propagate(vtaG, canon)
 	result := make(map[*ssa.TypeAssert]map[types.Type]struct{})
 	for f, _ := range AllFuncs {
-		tmp := typeAssertTypes(f.f, &typesMap, methodCache{}, f.ctx)
+		tmp := typeAssertTypes(f.f, &typesMap, methodCache{}, getOriginalContext(f.ctxKey))
 		for k, v := range tmp {
 			if _, found := result[k]; found {
 				maps.Copy(result[k], v)

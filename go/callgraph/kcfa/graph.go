@@ -8,23 +8,83 @@ import (
 	"fmt"
 	"go/token"
 	"go/types"
+	"strings"
 
 	"golang.org/x/tools/go/ssa"
 	"golang.org/x/tools/go/types/typeutil"
 	"golang.org/x/tools/internal/typeparams"
 )
 
-// 定义上下文类型，用于表示调用点。
+// 定义上下文类型，支持k层调用链
 type context struct {
-	callSite ssa.Instruction // 调用指令
+	callChain []ssa.Instruction // 调用链（最多保留k个最近的调用点）
+	k         int               // CFA的k值
 }
 
-func (c context) String() string {
-	if c.callSite == nil {
-		return "root"
+func NewContext(k int, callSite ssa.Instruction) context {
+	if k <= 0 {
+		return context{k: k}
 	}
-	pos := c.callSite.Pos()
-	return fmt.Sprintf("call@%d", pos)
+	return context{
+		callChain: []ssa.Instruction{callSite},
+		k:         k,
+	}
+}
+
+// 新增全局映射，用于存储上下文键到原始上下文的映射
+var ContextMap = make(map[string]context) // ctxKey -> context
+
+func createCtxKey(ctx context) string {
+	ctxKey := ctx.String()
+
+	// 存储到全局映射
+	ContextMap[ctxKey] = ctx
+
+	return ctxKey
+}
+
+// 使用示例（在需要获取原始 context 的地方）
+func getOriginalContext(ctxKey string) context {
+	if ctx, exists := ContextMap[ctxKey]; exists {
+		return ctx
+	}
+	return context{} // 或处理错误情况
+}
+
+// String方法生成唯一标识上下文的字符串，包含k值和callChain中各指令的指针地址
+func (c context) String() string {
+	var parts []string
+	parts = append(parts, fmt.Sprintf("k=%d", c.k)) // 包含k值
+	if len(c.callChain) == 0 {
+		parts = append(parts, "root")
+	} else {
+		for _, site := range c.callChain {
+			pos := site.Pos()
+			parts = append(parts, fmt.Sprintf("call@%d", pos))
+		}
+	}
+	return strings.Join(parts, "->")
+}
+
+// 创建新上下文（保留最近k个调用点）
+func (c context) extend(callSite ssa.Instruction) context {
+	newChain := make([]ssa.Instruction, 0, c.k)
+	newChain = append(newChain, callSite)
+
+	// 保留前k-1个调用点
+	remaining := c.k - 1
+	if remaining > 0 {
+		start := len(c.callChain) - remaining
+		if start < 0 {
+			start = 0
+		}
+		newChain = append(newChain, c.callChain[start:]...)
+	}
+
+	return context{
+		callChain: newChain[:min(len(newChain), c.k)],
+		k:         c.k,
+	}
 }
 
 // node 接口，表示VTA图的节点，增加了上下文信息。
@@ -37,7 +97,7 @@ type node interface {
 // constant node for VTA.
 type constant struct {
 	typ types.Type
-	ctx context
+	ctxKey string
 }
 
 func (c constant) Type() types.Type {
@@ -45,14 +105,14 @@ func (c constant) Type() types.Type {
 }
 
 func (c constant) String() string {
-	return fmt.Sprintf("%s: Constant(%v)", c.ctx, c.Type())
+	return fmt.Sprintf("%s: Constant(%v)", c.ctxKey, c.Type())
 }
 
-func (c constant) Context() context {return c.ctx}
+func (c constant) Context() context {return getOriginalContext(c.ctxKey)}
 // pointer node for VTA.
 type pointer struct {
 	typ *types.Pointer
-	ctx context
+	ctxKey string
 }
 
 func (p pointer) Type() types.Type {
@@ -60,15 +120,15 @@ func (p pointer) Type() types.Type {
 }
 
 func (p pointer) String() string {
-	return fmt.Sprintf("%s: Pointer(%v)", p.ctx, p.Type())
+	return fmt.Sprintf("%s: Pointer(%v)", p.ctxKey, p.Type())
 }
 
-func (p pointer) Context() context {return p.ctx}
+func (p pointer) Context() context {return getOriginalContext(p.ctxKey)}
 
 // mapKey node for VTA, modeling reachable map key types.
 type mapKey struct {
 	typ types.Type
-	ctx context
+	ctxKey string
 }
 
 func (mk mapKey) Type() types.Type {
@@ -76,15 +136,15 @@ func (mk mapKey) Type() types.Type {
 }
 
 func (mk mapKey) String() string {
-	return fmt.Sprintf("%s: MapKey(%v)", mk.ctx, mk.Type())
+	return fmt.Sprintf("%s: MapKey(%v)", mk.ctxKey, mk.Type())
 }
 
-func (mk mapKey) Context() context {return mk.ctx}
+func (mk mapKey) Context() context {return getOriginalContext(mk.ctxKey)}
 
 // mapValue node for VTA, modeling reachable map value types.
 type mapValue struct {
 	typ types.Type
-	ctx context
+	ctxKey string
 }
 
 func (mv mapValue) Type() types.Type {
@@ -92,15 +152,15 @@ func (mv mapValue) Type() types.Type {
 }
 
 func (mv mapValue) String() string {
-	return fmt.Sprintf("%s: MapValue(%v)", mv.ctx, mv.Type())
+	return fmt.Sprintf("%s: MapValue(%v)", mv.ctxKey, mv.Type())
 }
 
-func (mv mapValue) Context() context {return mv.ctx}
+func (mv mapValue) Context() context {return getOriginalContext(mv.ctxKey)}
 
 // sliceElem node for VTA, modeling reachable slice and array element types.
 type sliceElem struct {
 	typ types.Type
-	ctx context
+	ctxKey string
 }
 
 func (s sliceElem) Type() types.Type {
@@ -108,15 +168,15 @@ func (s sliceElem) Type() types.Type {
 }
 
 func (s sliceElem) String() string {
-	return fmt.Sprintf("%s: Slice([]%v)", s.ctx, s.Type())
+	return fmt.Sprintf("%s: Slice([]%v)", s.ctxKey, s.Type())
 }
 
-func (s sliceElem) Context() context {return s.ctx}
+func (s sliceElem) Context() context {return getOriginalContext(s.ctxKey)}
 
 // channelElem node for VTA, modeling reachable channel element types.
 type channelElem struct {
 	typ types.Type
-	ctx context
+	ctxKey string
 }
 
 func (c channelElem) Type() types.Type {
@@ -124,16 +184,16 @@ func (c channelElem) Type() types.Type {
 }
 
 func (c channelElem) String() string {
-	return fmt.Sprintf("%s: Channel(chan %v)", c.ctx, c.Type())
+	return fmt.Sprintf("%s: Channel(chan %v)", c.ctxKey, c.Type())
 }
 
-func (c channelElem) Context() context {return c.ctx}
+func (c channelElem) Context() context {return getOriginalContext(c.ctxKey)}
 
 // field node for VTA.
 type field struct {
 	StructType types.Type
 	index      int // index of the field in the struct
-	ctx context
+	ctxKey string
 }
 
 func (f field) Type() types.Type {
@@ -143,15 +203,15 @@ func (f field) Type() types.Type {
 
 func (f field) String() string {
 	s := typeparams.CoreType(f.StructType).(*types.Struct)
-	return fmt.Sprintf("%s Field(%v:%s)", f.ctx, f.StructType, s.Field(f.index).Name())
+	return fmt.Sprintf("%s Field(%v:%s)", f.ctxKey, f.StructType, s.Field(f.index).Name())
 }
 
-func (f field) Context() context {return f.ctx}
+func (f field) Context() context {return getOriginalContext(f.ctxKey)}
 
 // global node for VTA.
 type global struct {
 	val *ssa.Global
-	ctx context
+	ctxKey string
 }
 
 func (g global) Type() types.Type {
@@ -159,16 +219,16 @@ func (g global) Type() types.Type {
 }
 
 func (g global) String() string {
-	return fmt.Sprintf("%s: Global(%s)", g.ctx, g.val.Name())
+	return fmt.Sprintf("%s: Global(%s)", g.ctxKey, g.val.Name())
 }
 
-func (g global) Context() context {return g.ctx}
+func (g global) Context() context {return getOriginalContext(g.ctxKey)}
 
 // local node for VTA modeling local variables
 // and function/method parameters.
 type local struct {
 	val ssa.Value
-	ctx context
+	ctxKey string
 }
 
 func (l local) Type() types.Type {
@@ -176,10 +236,10 @@ func (l local) Type() types.Type {
 }
 
 func (l local) String() string {
-	return fmt.Sprintf("%s: Local(%s)", l.ctx, l.val.Name())
+	return fmt.Sprintf("%s: Local(%s)", l.ctxKey, l.val.Name())
 }
 
-func (l local) Context() context {return l.ctx}
+func (l local) Context() context {return getOriginalContext(l.ctxKey)}
 
 // indexedLocal node for VTA node. Models indexed locals
 // related to the ssa extract instructions.
@@ -187,7 +247,7 @@ type indexedLocal struct {
 	val   ssa.Value
 	index int
 	typ   types.Type
-	ctx context
+	ctxKey string
 }
 
 func (i indexedLocal) Type() types.Type {
@@ -195,14 +255,14 @@ func (i indexedLocal) Type() types.Type {
 }
 
 func (i indexedLocal) String() string {
-	return fmt.Sprintf("%s: Local(%s[%d])", i.ctx, i.val.Name(), i.index)
+	return fmt.Sprintf("%s: Local(%s[%d])", i.ctxKey, i.val.Name(), i.index)
 }
 
-func (i indexedLocal) Context() context {return i.ctx}
+func (i indexedLocal) Context() context {return getOriginalContext(i.ctxKey)}
 // function node for VTA.
 type function struct {
 	f *ssa.Function
-	ctx context
+	ctxKey string
 }
 
 func (f function) Type() types.Type {
@@ -210,17 +270,17 @@ func (f function) Type() types.Type {
 }
 
 func (f function) String() string {
-	return fmt.Sprintf("%s: Function(%s)", f.ctx, f.f.Name())
+	return fmt.Sprintf("%s: Function(%s)", f.ctxKey, f.f.Name())
 }
 
-func (f function) Context() context {return f.ctx}
+func (f function) Context() context {return getOriginalContext(f.ctxKey)}
 // resultVar represents the result
 // variable of a function, whether
 // named or not.
 type resultVar struct {
 	f     *ssa.Function
 	index int // valid index into result var tuple
-	ctx context
+	ctxKey string
 }
 
 func (o resultVar) Type() types.Type {
@@ -230,12 +290,12 @@ func (o resultVar) Type() types.Type {
 func (o resultVar) String() string {
 	v := o.f.Signature.Results().At(o.index)
 	if n := v.Name(); n != "" {
-		return fmt.Sprintf("%s: Return(%s[%s])", o.ctx, o.f.Name(), n)
+		return fmt.Sprintf("%s: Return(%s[%s])", o.ctxKey, o.f.Name(), n)
 	}
-	return fmt.Sprintf("%s: Return(%s[%d])", o.ctx, o.f.Name(), o.index)
+	return fmt.Sprintf("%s: Return(%s[%d])", o.ctxKey, o.f.Name(), o.index)
 }
 
-func (o resultVar) Context() context {return o.ctx}
+func (o resultVar) Context() context {return getOriginalContext(o.ctxKey)}
 
 // nestedPtrInterface node represents all references and dereferences
 // of locals and globals that have a nested pointer to interface type.
@@ -248,7 +308,7 @@ func (o resultVar) Context() context {return o.ctx}
 //	var b **I
 type nestedPtrInterface struct {
 	typ types.Type
-	ctx context
+	ctxKey string
 }
 
 func (l nestedPtrInterface) Type() types.Type {
@@ -256,10 +316,10 @@ func (l nestedPtrInterface) Type() types.Type {
 }
 
 func (l nestedPtrInterface) String() string {
-	return fmt.Sprintf("%s: PtrInterface(%v)", l.ctx, l.typ)
+	return fmt.Sprintf("%s: PtrInterface(%v)", l.ctxKey, l.typ)
 }
 
-func (l nestedPtrInterface) Context() context {return l.ctx}
+func (l nestedPtrInterface) Context() context {return getOriginalContext(l.ctxKey)}
 // nestedPtrFunction node represents all references and dereferences of locals
 // and globals that have a nested pointer to function type. We merge such
 // constructs into a single node for simplicity and without much precision
@@ -270,7 +330,7 @@ func (l nestedPtrInterface) Context() context {return l.ctx}
 //	var b **func()
 type nestedPtrFunction struct {
 	typ types.Type
-	ctx context
+	ctxKey string
 }
 
 func (p nestedPtrFunction) Type() types.Type {
@@ -278,14 +338,14 @@ func (p nestedPtrFunction) Type() types.Type {
 }
 
 func (p nestedPtrFunction) String() string {
-	return fmt.Sprintf("%s: PtrFunction(%v)", p.ctx, p.typ)
+	return fmt.Sprintf("%s: PtrFunction(%v)", p.ctxKey, p.typ)
 }
 
-func (p nestedPtrFunction) Context() context {return p.ctx}
+func (p nestedPtrFunction) Context() context {return getOriginalContext(p.ctxKey)}
 
 // panicArg models types of all arguments passed to panic.
 type panicArg struct{
-	ctx context
+	ctxKey string
 }
 
 func (p panicArg) Type() types.Type {
@@ -296,11 +356,11 @@ func (p panicArg) String() string {
 	return "Panic"
 }
 
-func (p panicArg) Context() context {return p.ctx}
+func (p panicArg) Context() context {return getOriginalContext(p.ctxKey)}
 
 // recoverReturn models types of all return values of recover().
 type recoverReturn struct{
-	ctx context
+	ctxKey string
 }
 
 func (r recoverReturn) Type() types.Type {
@@ -311,7 +371,7 @@ func (r recoverReturn) String() string {
 	return "Recover"
 }
 
-func (r recoverReturn) Context() context {return r.ctx}
+func (r recoverReturn) Context() context {return getOriginalContext(r.ctxKey)}
 
 type empty = struct{}
 
@@ -342,7 +402,7 @@ func (g *vtaGraph) successors(x idx) func(yield func(y idx) bool) {
 
 // addEdge adds an edge x->y to the graph.
 func (g *vtaGraph) addEdge(x, y node) {
-	//fmt.Println("Add Edge: ", x, y)
+	fmt.Printf("Add Edge: %-60s %-60s\n", x, y)
 	if g.idx == nil {
 		g.idx = make(map[node]idx)
 	}
@@ -369,8 +429,8 @@ func (g *vtaGraph) addEdge(x, y node) {
 // typePropGraph builds a VTA graph for a set of `funcs` and initial
 // `callgraph` needed to establish interprocedural edges. Returns the
 // graph and a map for unique type representatives.
-func typePropGraph(funcs map[*ssa.Function]bool, callees calleesFunc) (*vtaGraph, *typeutil.Map) {
-	b := builder{callees: callees}
+func typePropGraph(funcs map[*ssa.Function]bool, callees calleesFunc, k int) (*vtaGraph, *typeutil.Map) {
+	b := builder{callees: callees, k: k}
 	b.visit(funcs)
 	b.callees = nil // ensure callees is not pinned by pointers to other fields of b.
 	return &b.graph, &b.canon
@@ -391,6 +451,7 @@ type builder struct {
 	// types too, in particular type representatives. Each value is a
 	// pointer so this map is not expected to take much memory.
 	canon typeutil.Map
+	k             int // 存储k值
 }
 
 // 为每个调用点分配唯一的ID
@@ -413,25 +474,27 @@ func (b *builder) visit(funcs map[*ssa.Function]bool) {
 
 	for f, in := range funcs {
 		if in {
-			b.fun(f, context{})
+			b.fun(f, context{k: b.k})
 		}
 	}
 }
 
 type funcNode struct{
 	f *ssa.Function
-	ctx context
+	ctxKey string // 使用context生成的字符串键替代原context结构体
 }
 
 //record all functions with context so that after type propagation, we can find the function with context.
 var AllFuncs map[funcNode]struct{} = make(map[funcNode]struct{})
 
 func (b *builder) fun(f *ssa.Function, ctx context) {
-	//fmt.Println("funcs: ", f, ctx)
-	if _, ok := AllFuncs[funcNode{f, ctx}]; ok {
+	key := funcNode{f,createCtxKey(ctx)}
+	if _, exists := AllFuncs[key]; exists {
 		return
 	}
-	AllFuncs[funcNode{f, ctx}] = struct{}{}
+	AllFuncs[key] = struct{}{}
+
+	// 处理函数体时携带当前上下文
 	for _, bl := range f.Blocks {
 		for _, instr := range bl.Instrs {
 			b.instr(instr, ctx)
@@ -527,7 +590,7 @@ func (b *builder) unop(u *ssa.UnOp, ctx context) {
 		b.addInFlowAliasEdges(b.nodeFromVal(u, ctx), b.nodeFromVal(u.X, ctx))
 	case token.ARROW:
 		t := typeparams.CoreType(u.X.Type()).(*types.Chan).Elem()
-		b.addInFlowAliasEdges(b.nodeFromVal(u,ctx), channelElem{typ: t, ctx: ctx})
+		b.addInFlowAliasEdges(b.nodeFromVal(u,ctx), channelElem{typ: t, ctxKey: createCtxKey(ctx)})
 	default:
 		// There is no interesting type flow otherwise.
 	}
@@ -550,7 +613,7 @@ func (b *builder) tassert(a *ssa.TypeAssert, ctx context) {
 	tup := a.Type().(*types.Tuple)
 	t := tup.At(0).Type()
 
-	local := indexedLocal{val: a, typ: t, index: 0, ctx: ctx}
+	local := indexedLocal{val: a, typ: t, index: 0, ctxKey: createCtxKey(ctx)}
 	b.addInFlowEdge(b.nodeFromVal(a.X, ctx), local)
 }
 
@@ -561,12 +624,12 @@ func (b *builder) extract(e *ssa.Extract, ctx context) {
 	tup := e.Tuple.Type().(*types.Tuple)
 	t := tup.At(e.Index).Type()
 
-	local := indexedLocal{val: e.Tuple, typ: t, index: e.Index, ctx: ctx}
+	local := indexedLocal{val: e.Tuple, typ: t, index: e.Index, ctxKey: createCtxKey(ctx)}
 	b.addInFlowAliasEdges(b.nodeFromVal(e, ctx), local)
 }
 
 func (b *builder) field(f *ssa.Field, ctx context) {
-	fnode := field{StructType: f.X.Type(), index: f.Field, ctx: ctx}
+	fnode := field{StructType: f.X.Type(), index: f.Field, ctxKey: createCtxKey(ctx)}
 	b.addInFlowEdge(fnode, b.nodeFromVal(f, ctx))
 }
 
@@ -597,11 +660,11 @@ func (b *builder) selekt(s *ssa.Select, ctx context) {
 		t := typeparams.CoreType(state.Chan.Type()).(*types.Chan).Elem()
 
 		if state.Dir == types.SendOnly {
-			b.addInFlowAliasEdges(channelElem{typ: t, ctx: ctx}, b.nodeFromVal(state.Send, ctx))
+			b.addInFlowAliasEdges(channelElem{typ: t, ctxKey: createCtxKey(ctx)}, b.nodeFromVal(state.Send, ctx))
 		} else {
 			// state.Dir == RecvOnly by definition of select instructions.
-			tupEntry := indexedLocal{val: s, typ: t, index: 2 + recvIndex, ctx: ctx}
-			b.addInFlowAliasEdges(tupEntry, channelElem{typ: t, ctx: ctx})
+			tupEntry := indexedLocal{val: s, typ: t, index: 2 + recvIndex, ctxKey: createCtxKey(ctx)}
+			b.addInFlowAliasEdges(tupEntry, channelElem{typ: t, ctxKey: createCtxKey(ctx)})
 			recvIndex++
 		}
 	}
@@ -612,7 +675,7 @@ func (b *builder) selekt(s *ssa.Select, ctx context) {
 // slice elements are both modeled as SliceElem.
 func (b *builder) index(i *ssa.Index, ctx context) {
 	et := sliceArrayElem(i.X.Type())
-	b.addInFlowAliasEdges(b.nodeFromVal(i, ctx), sliceElem{typ: et, ctx: ctx})
+	b.addInFlowAliasEdges(b.nodeFromVal(i, ctx), sliceElem{typ: et, ctxKey: createCtxKey(ctx)})
 }
 
 // indexAddr instruction a := &b[c] fetches address of a index
@@ -621,8 +684,8 @@ func (b *builder) index(i *ssa.Index, ctx context) {
 // both modeled as SliceElem.
 func (b *builder) indexAddr(i *ssa.IndexAddr, ctx context) {
 	et := sliceArrayElem(i.X.Type())
-	b.addInFlowEdge(sliceElem{typ: et, ctx: ctx}, b.nodeFromVal(i, ctx))
-	b.addInFlowEdge(b.nodeFromVal(i, ctx), sliceElem{typ: et, ctx: ctx})
+	b.addInFlowEdge(sliceElem{typ: et, ctxKey: createCtxKey(ctx)}, b.nodeFromVal(i, ctx))
+	b.addInFlowEdge(b.nodeFromVal(i, ctx), sliceElem{typ: et, ctxKey: createCtxKey(ctx)})
 }
 
 // lookup handles map query commands a := m[b] where m is of type
@@ -636,10 +699,10 @@ func (b *builder) lookup(l *ssa.Lookup, ctx context) {
 	}
 
 	if !l.CommaOk {
-		b.addInFlowAliasEdges(b.nodeFromVal(l, ctx), mapValue{typ: t.Elem(), ctx: ctx})
+		b.addInFlowAliasEdges(b.nodeFromVal(l, ctx), mapValue{typ: t.Elem(), ctxKey: createCtxKey(ctx)})
 	} else {
-		i := indexedLocal{val: l, typ: t.Elem(), index: 0, ctx: ctx}
-		b.addInFlowAliasEdges(i, mapValue{typ: t.Elem(), ctx: ctx})
+		i := indexedLocal{val: l, typ: t.Elem(), index: 0, ctxKey: createCtxKey(ctx)}
+		b.addInFlowAliasEdges(i, mapValue{typ: t.Elem(), ctxKey: createCtxKey(ctx)})
 	}
 }
 
@@ -653,8 +716,8 @@ func (b *builder) mapUpdate(u *ssa.MapUpdate, ctx context) {
 		return
 	}
 
-	b.addInFlowAliasEdges(mapKey{typ: t.Key(), ctx: ctx}, b.nodeFromVal(u.Key, ctx))
-	b.addInFlowAliasEdges(mapValue{typ: t.Elem(), ctx: ctx}, b.nodeFromVal(u.Value, ctx))
+	b.addInFlowAliasEdges(mapKey{typ: t.Key(), ctxKey: createCtxKey(ctx)}, b.nodeFromVal(u.Key, ctx))
+	b.addInFlowAliasEdges(mapValue{typ: t.Elem(), ctxKey: createCtxKey(ctx)}, b.nodeFromVal(u.Value, ctx))
 }
 
 // next instruction <ok, key, value> := next r, where r
@@ -668,8 +731,8 @@ func (b *builder) next(n *ssa.Next, ctx context) {
 	kt := tup.At(1).Type()
 	vt := tup.At(2).Type()
 
-	b.addInFlowAliasEdges(indexedLocal{val: n, typ: kt, index: 1, ctx: ctx}, mapKey{typ: kt, ctx: ctx})
-	b.addInFlowAliasEdges(indexedLocal{val: n, typ: vt, index: 2, ctx: ctx}, mapValue{typ: vt, ctx: ctx})
+	b.addInFlowAliasEdges(indexedLocal{val: n, typ: kt, index: 1, ctxKey: createCtxKey(ctx)}, mapKey{typ: kt, ctxKey: createCtxKey(ctx)})
+	b.addInFlowAliasEdges(indexedLocal{val: n, typ: vt, index: 2, ctxKey: createCtxKey(ctx)}, mapValue{typ: vt, ctxKey: createCtxKey(ctx)})
 }
 
 // addInFlowAliasEdges adds an edge r -> l to b.graph if l is a node that can
@@ -723,9 +786,10 @@ func (b *builder) call(c ssa.CallInstruction, ctx context) {
 	}
 
 	siteCallees(c, b.callees)(func(f *ssa.Function) bool {
-		addArgumentFlows(b, c, f, ctx)
+		newCtx := ctx.extend(c)
 
-		b.fun(f, context{callSite: c})
+		addArgumentFlows(b, c, f, ctx)
+		b.fun(f, newCtx)
 
 		site, ok := c.(ssa.Value)
 		if !ok {
@@ -736,12 +800,12 @@ func (b *builder) call(c ssa.CallInstruction, ctx context) {
 		if results.Len() == 1 {
 			// When there is only one return value, the destination register does not
 			// have a tuple type.
-			b.addInFlowEdge(resultVar{f: f, index: 0, ctx: context{callSite: c}}, b.nodeFromVal(site, ctx))
+			b.addInFlowEdge(resultVar{f: f, index: 0, ctxKey: createCtxKey(newCtx)}, b.nodeFromVal(site, ctx))
 		} else {
 			tup := site.Type().(*types.Tuple)
 			for i := 0; i < results.Len(); i++ {
-				local := indexedLocal{val: site, typ: tup.At(i).Type(), index: i, ctx: ctx}
-				b.addInFlowEdge(resultVar{f: f, index: i, ctx: context{callSite: c}}, local)
+				local := indexedLocal{val: site, typ: tup.At(i).Type(), index: i, ctxKey: createCtxKey(ctx)}
+				b.addInFlowEdge(resultVar{f: f, index: i, ctxKey: createCtxKey(newCtx)}, local)
 			}
 		}
 		return true
@@ -767,7 +831,7 @@ func addArgumentFlows(b *builder, c ssa.CallInstruction, f *ssa.Function, ctx co
 		// The flow other way around would bake in information from the
 		// initial call graph.
 		if isFunction(f.Params[0].Type()) {
-			b.addInFlowEdge(b.nodeFromVal(cc.Value, context{callSite: c}), b.nodeFromVal(f.Params[0], ctx))
+			b.addInFlowEdge(b.nodeFromVal(cc.Value, ctx.extend(c)), b.nodeFromVal(f.Params[0], ctx))
 		}
 	}
 
@@ -784,7 +848,7 @@ func addArgumentFlows(b *builder, c ssa.CallInstruction, f *ssa.Function, ctx co
 		if len(f.Params) <= i+offset {
 			return
 		}
-		b.addInFlowAliasEdges(b.nodeFromVal(f.Params[i+offset], context{callSite: c}), b.nodeFromVal(v, ctx))
+		b.addInFlowAliasEdges(b.nodeFromVal(f.Params[i+offset], ctx.extend(c)), b.nodeFromVal(v, ctx))
 	}
 }
 
@@ -792,7 +856,7 @@ func addArgumentFlows(b *builder, c ssa.CallInstruction, f *ssa.Function, ctx co
 // statement to the result variables of the enclosing function.
 func (b *builder) rtrn(r *ssa.Return, ctx context) {
 	for i, rs := range r.Results {
-		b.addInFlowEdge(b.nodeFromVal(rs, ctx), resultVar{f: r.Parent(), index: i, ctx: ctx})
+		b.addInFlowEdge(b.nodeFromVal(rs, ctx), resultVar{f: r.Parent(), index: i, ctxKey: createCtxKey(ctx)})
 	}
 }
 
@@ -876,26 +940,26 @@ func (b *builder) nodeFromVal(val ssa.Value, ctx context) node {
 		// Nested pointer to interfaces are modeled as a special
 		// nestedPtrInterface node.
 		if i := interfaceUnderPtr(p.Elem()); i != nil {
-			return nestedPtrInterface{typ: i, ctx: ctx}
+			return nestedPtrInterface{typ: i, ctxKey: createCtxKey(ctx)}
 		}
 		// The same goes for nested function types.
 		if f := functionUnderPtr(p.Elem()); f != nil {
-			return nestedPtrFunction{typ: f, ctx: ctx}
+			return nestedPtrFunction{typ: f, ctxKey: createCtxKey(ctx)}
 		}
-		return pointer{typ: p, ctx: ctx}
+		return pointer{typ: p, ctxKey: createCtxKey(ctx)}
 	}
 
 	switch v := val.(type) {
 	case *ssa.Const:
-		return constant{typ: val.Type(), ctx: ctx}
+		return constant{typ: val.Type(), ctxKey: createCtxKey(ctx)}
 	case *ssa.Global:
-		return global{val: v, ctx: ctx}
+		return global{val: v, ctxKey: createCtxKey(ctx)}
 	case *ssa.Function:
-		return function{f: v, ctx: ctx}
+		return function{f: v, ctxKey: createCtxKey(ctx)}
 	case *ssa.Parameter, *ssa.FreeVar, ssa.Instruction:
 		// ssa.Param, ssa.FreeVar, and a specific set of "register" instructions,
 		// satisifying the ssa.Value interface, can serve as local variables.
-		return local{val: v, ctx: ctx}
+		return local{val: v, ctxKey: createCtxKey(ctx)}
 	default:
 		panic(fmt.Errorf("unsupported value %v in node creation", val))
 	}
@@ -914,25 +978,25 @@ func (b *builder) representative(n node) node {
 
 	switch i := n.(type) {
 	case constant:
-		return constant{typ: t, ctx: n.Context()}
+		return constant{typ: t, ctxKey: createCtxKey(n.Context())}
 	case pointer:
-		return pointer{typ: t.(*types.Pointer), ctx: n.Context()}
+		return pointer{typ: t.(*types.Pointer), ctxKey: createCtxKey(n.Context())}
 	case sliceElem:
-		return sliceElem{typ: t, ctx: n.Context()}
+		return sliceElem{typ: t, ctxKey: createCtxKey(n.Context())}
 	case mapKey:
-		return mapKey{typ: t, ctx: n.Context()}
+		return mapKey{typ: t, ctxKey: createCtxKey(n.Context())}
 	case mapValue:
-		return mapValue{typ: t, ctx: n.Context()}
+		return mapValue{typ: t, ctxKey: createCtxKey(n.Context())}
 	case channelElem:
-		return channelElem{typ: t, ctx: n.Context()}
+		return channelElem{typ: t, ctxKey: createCtxKey(n.Context())}
 	case nestedPtrInterface:
-		return nestedPtrInterface{typ: t, ctx: n.Context()}
+		return nestedPtrInterface{typ: t, ctxKey: createCtxKey(n.Context())}
 	case nestedPtrFunction:
-		return nestedPtrFunction{typ: t, ctx: n.Context()}
+		return nestedPtrFunction{typ: t, ctxKey: createCtxKey(n.Context())}
 	case field:
-		return field{StructType: canonicalize(i.StructType, &b.canon), index: i.index, ctx: n.Context()}
+		return field{StructType: canonicalize(i.StructType, &b.canon), index: i.index, ctxKey: createCtxKey(n.Context())}
 	case indexedLocal:
-		return indexedLocal{typ: t, val: i.val, index: i.index, ctx: n.Context()}
+		return indexedLocal{typ: t, val: i.val, index: i.index, ctxKey: createCtxKey(n.Context())}
 	case local, global, panicArg, recoverReturn, function, resultVar:
 		return n
 	default:

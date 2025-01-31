@@ -493,17 +493,17 @@ func (b *builder) convertToField(s ssa.Value) *TreeNode {
 	if f, ok := s.(*ssa.UnOp); ok && f.Op == token.MUL {
 		return b.convertToField(f.X)
 	}
-	v, path := unpackStructVar(s)
+	v, path := UnpackVarAndPath(s)
 	return b.Insert(v, path, nil)
 }
 
-func unpackStructVar(s ssa.Value) (ssa.Value, []int) {
+func UnpackVarAndPath(s ssa.Value) (ssa.Value, []int) {
 	if f, ok := s.(*ssa.FieldAddr); ok {
-		v, path := unpackStructVar(f.X)
+		v, path := UnpackVarAndPath(f.X)
 		return v,append(path, f.Field)
 	}
 	if f, ok := s.(*ssa.Field); ok {
-		v, path := unpackStructVar(f.X)
+		v, path := UnpackVarAndPath(f.X)
 		return v,append(path, f.Field)
 	}
 	return s, []int{}
@@ -513,11 +513,11 @@ func (b *builder) field(f *ssa.Field) {
 	coreType := typeparams.CoreType(f.Type())
 	if ptrType, ok := coreType.(*types.Pointer); ok {
 		t := ptrType.Elem()
-		struct_var, path := unpackStructVar(f)
+		struct_var, path := UnpackVarAndPath(f)
 		fnode := field{ t, b.Insert(struct_var, path, t).ID }
 		b.addInFlowEdge(fnode, b.nodeFromVal(f))
 	} else {
-		struct_var, path := unpackStructVar(f)
+		struct_var, path := UnpackVarAndPath(f)
 		fnode := field{ f.Type(), b.Insert(struct_var, path, f.Type()).ID }
 		b.addInFlowEdge(fnode, b.nodeFromVal(f))
 	}
@@ -526,7 +526,7 @@ func (b *builder) field(f *ssa.Field) {
 func (b *builder) fieldAddr(f *ssa.FieldAddr) {
 	// Since we are getting pointer to a field, make a bidirectional edge.
 	t := typeparams.CoreType(f.Type()).(*types.Pointer).Elem()
-	struct_var, path := unpackStructVar(f)
+	struct_var, path := UnpackVarAndPath(f)
 	fnode := field{ t, b.Insert(struct_var, path, t).ID }
 	b.addInFlowEdge(fnode, b.nodeFromVal(f))
 	b.addInFlowEdge(b.nodeFromVal(f), fnode)
